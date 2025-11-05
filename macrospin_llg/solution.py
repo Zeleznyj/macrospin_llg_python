@@ -21,7 +21,7 @@ class Solution:
         model (Model): A deep copy of the model used for the simulation.
         t (np.ndarray): 1D array of time points.
         M (np.ndarray): 3D array of magnetic moments, shape (time_points, n_mag, 3).
-        E (np.ndarray): Lazily-computed energy evolution, shape (time_points, 5).
+        E (list[dict]): Lazily-computed energy evolution; list of dictionaries per timestep.
         M_total (np.ndarray): Lazily-computed net magnetic moment, shape (time_points, 3).
     """
 
@@ -112,9 +112,9 @@ class Solution:
         """Calculates the energy evolution for each time step."""
         if self.E is None:
             num_steps = len(self.t)
-            energies = np.zeros((num_steps, 5))
+            energies = []
             for i in range(num_steps):
-                energies[i, :] = self.model.energy(self.t[i], self.M[i, :, :])
+                energies.append(self.model.energy(self.t[i], self.M[i, :, :]))
             self.E = energies
 
     def plot_energy(self):
@@ -123,10 +123,17 @@ class Solution:
 
         fig = go.Figure()
         time_ns = self.t
-        labels = ['Total', 'Exchange', 'DMI', 'Anisotropy', 'B-field']
+        # Determine all keys present across timesteps (excluding 'total' which we'll plot first)
+        all_keys = set()
+        for e in self.E:
+            all_keys.update(e.keys())
+        keys = [k for k in sorted(all_keys) if k != 'total']
 
-        for i, label in enumerate(labels):
-            fig.add_trace(go.Scatter(x=time_ns, y=self.E[:, i], name=label, mode='lines'))
+        # Plot total first
+        fig.add_trace(go.Scatter(x=time_ns, y=[e.get('total', float('nan')) for e in self.E], name='Total', mode='lines'))
+        # Plot individual contributions
+        for key in keys:
+            fig.add_trace(go.Scatter(x=time_ns, y=[e.get(key, 0.0) for e in self.E], name=key.capitalize(), mode='lines'))
 
         fig.update_layout(
             title_text='Energy Evolution',

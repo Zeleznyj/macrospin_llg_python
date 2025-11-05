@@ -5,7 +5,7 @@ A Python package for solving the macrospin Landau-Lifshitz-Gilbert (LLG) equatio
 ## Features
 
 - Arbitrary number of macrospins.
-- Supports exchange, multiple anisotropies, DMI, Zeeman field, time-dependent fields, and spin-transfer torque.
+- Supports exchange, multiple anisotropies, DMI, Zeeman field, and time-dependent fields.
 - Robust, implicit LLG solver (Assimulo/IDA backend).
 - Interactive visualization using Plotly.
 
@@ -43,7 +43,11 @@ m = Model(n_mag)
 - `m.add_ani6(a, K, A)`     - Sixth-order anisotropy (axis `A`).
 - `m.add_DMI(a, b, d)`      - Antisymmetric DMI interaction (vector `d`).
 - `m.add_B(a, B)`           - Static magnetic field (B as 3-vector).
-- `m.add_Bmf(a, f)`         - Arbitrary effective field: `f` is a function with signature `f(t, M)` that returns the effective field (3-vector) for moment `a` at time `t` and for magnetic moments `M`, where `M` is a NumPy array of shape `(n_mag, 3)`.
+- `m.add_custom_interaction(name, beff_per_atom=None, energy=None)` - Named custom terms:
+  - `name`: unique string identifier for this term.
+  - `beff_per_atom`: sequence length `n_mag` with per-atom callables `beff_i(t, M) -> (3,)` (use `None` to skip a site).
+  - `energy(t, M) -> float` contributes to total energy (optional). Provide both for conservative interactions.
+  - Call multiple times to add multiple interactions; all fields and energies sum, tracked by name.
 
 Arguments `a` and `b`:
 - Integer (zero-based): Specifies one moment. Indexing starts from 0, unlike in the Matlab code!
@@ -67,7 +71,30 @@ M0 = np.array([
 
 solution = m.solve_LLG(tf=1.0, M0=M0)
 ```
-Additional solver parameters: `t0`, `relprec`, `absprec`, `ncp`.
+Additional solver parameters: `t0`, `ncp`.
+
+You can also configure all solver options using a single dictionary via the `solver_kwargs` argument. All keys are applied directly to the underlying solver instance:
+
+```python
+solver_opts = {
+    'rtol': 1e-4,
+    'atol': 1e-7,
+    # Any additional attributes on the underlying solver can be set here, e.g.:
+    # 'maxsteps': 100000,
+    # 'h0': 1e-12,
+}
+
+solution = m.solve_LLG(tf=1.0, M0=M0, ncp=200, solver_kwargs=solver_opts)
+```
+
+### Solver backend
+
+This package wraps the implicit DAE solver IDA via the Assimulo interface:
+
+- <a href="https://jmodelica.org/assimulo/DAE_IDA.html" target="_blank" rel="noopener">Assimulo documentation</a>
+- <a href="https://sundials.readthedocs.io/en/latest/ida/index.html" target="_blank" rel="noopener">SUNDIALS IDA documentation</a>
+
+Under the hood `Model.solve_LLG` constructs an `assimulo.problem.Implicit_Problem` and solves it with `assimulo.solvers.IDA`. Any attribute supported by the underlying solver can be passed through `solver_kwargs` (e.g., `rtol`, `atol`, `maxsteps`, `h0`). See the linked docs for the full list of available options and their meaning.
 
 ---
 
@@ -85,7 +112,7 @@ After running `solve_LLG`, you get a `Solution` object with:
 ```python
 solution.plot()              # Plots Mx, My, Mz for each moment
 solution.plot_M_total()      # Plots net magnetic moment (Mx, My, Mz)
-solution.plot_energy()       # Plots energy breakdown (Total, Exchange, DMI, Anisotropy, Field)
+solution.plot_energy()       # Plots energy breakdown from dict: Total and each named component
 
 # Animated 3D display (optional)
 solution.plot_animated_3d()
@@ -103,7 +130,8 @@ You can access model parameters directly, for advanced use:
 - `m.A2`, `m.A6`              - Anisotropy axes, shape `(3, n_mag)`
 - `m.B`    - Fields, shape `(n_mag, 3)`
 - `m.ag`   - Damping
-- `m.Bmf` - List of the custom effective field functions for every atom. None means no function specified.
+- `m._custom_beff_terms` - Dicts of custom effective field functions per moment (internal API).
+- `m._custom_energy_terms` - Dict of custom energy functions by name (internal API).
 
 ---
 
@@ -153,10 +181,10 @@ see code for conventions.
 
 ### LLG Equations
 
-The Landau-Lifshitz-Gilbert equations (with damping, DMI, and spin-transfer torque) are:
+The Landau-Lifshitz-Gilbert equations are:
 
 $$
-\frac{d M^a}{dt} = \gamma M^a \times B_{\text{eff}}^a - \frac{\alpha}{|M^a|} M^a \times \frac{d M^a}{dt} + S^a M^a \times (M^a \times p^a)
+\frac{d M^a}{dt} = \gamma M^a \times B_{\text{eff}}^a - \frac{\alpha}{|M^a|} M^a \times \frac{d M^a}{dt}
 $$
 where
 
@@ -164,7 +192,6 @@ $$
 B_{\text{eff}}^a = -\frac{1}{|M^a|}\frac{\partial H}{\partial \hat{M}^a}
 $$
 - $\alpha$ is the Gilbert damping (set as `m.ag`)
-- $S^a, p^a$ are spin-torque magnitude and polarization
 - $\gamma$ is the gyromagnetic ratio
 
 All terms admitted by the Hamiltonian and equation above are supported by corresponding `Model` class functions.

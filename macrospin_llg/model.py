@@ -36,7 +36,11 @@ class Model:
 
         # Effective field terms are shaped (n_mag, 3)
         self.B = np.zeros((self.n_mag, 3))
-        self.Bmf = [None] * self.n_mag
+        # New: multiple custom interactions
+        # Per-spin dict of Beff callables by name: name -> f(t, M) -> (3,)
+        self._custom_beff_terms = [dict() for _ in range(self.n_mag)]
+        # Global dict of custom energy callables by name: name -> g(t, M) -> float
+        self._custom_energy_terms = {}
 
     def _ita(self, a):
         """
@@ -89,13 +93,11 @@ class Model:
         for i in it:
             self.K4[i] = K
 
-    def add_ani6(self, a, K, A):
+    def add_ani6(self, a, K):
         """Adds sixth-order anisotropy (K*(M.A)^6). Zero-based indexing, -1 for all moments."""
         it = self._ita(a)
-        A_norm = np.asarray(A) / np.linalg.norm(A)
         for i in it:
             self.K6[i] = K
-            self.A6[:, i] = A_norm
 
     def add_B(self, a, B):
         """Adds a static magnetic field B (in Tesla). Zero-based indexing, -1 for all moments."""
@@ -113,11 +115,42 @@ class Model:
         self.D[:, :, a_idx, b_idx] += d_matrix
         self.D[:, :, b_idx, a_idx] -= d_matrix  # DMI is anti-symmetric
 
-    def add_Bmf(self, a, Bmf):
-        """Adds an effective field Bmf(t, M) to moments, zero-based indexing, -1 for all moments."""
-        it = self._ita(a)
-        for i in it:
-            self.Bmf[i] = Bmf
+    def add_custom_interaction(self, name, beff_per_atom=None, energy=None):
+        """Adds a custom interaction.
+
+        Args:
+            name (str): Unique name for this custom interaction.
+            beff_per_atom (sequence|None): Sequence of length n_mag where each element is a callable
+                beff_i(t, M) -> (3,) for spin i (or None to skip that spin).
+            energy (callable|None): Function energy(t, M) -> float contributing to total energy.
+
+        Provide at least one of beff_per_atom or energy. Supplying both corresponds to a conservative
+        interaction where beff is consistent with the gradient of the provided energy.
+        """
+        if not isinstance(name, str) or not name:
+            raise ValueError("name must be a non-empty string.")
+        if beff_per_atom is None and energy is None:
+            raise ValueError("At least one of beff_per_atom or energy must be provided.")
+
+        if beff_per_atom is not None:
+            try:
+                beff_list = list(beff_per_atom)
+            except TypeError:
+                raise TypeError("beff_per_atom must be a sequence of length n_mag with callables or None.")
+            if len(beff_list) != self.n_mag:
+                raise ValueError(f"beff_per_atom must have length n_mag={self.n_mag}.")
+            for i, beff_i in enumerate(beff_list):
+                if beff_i is None:
+                    continue
+                if not callable(beff_i):
+                    raise TypeError(f"beff_per_atom[{i}] must be callable or None.")
+                self._custom_beff_terms[i][name] = beff_i
+
+        if energy is not None:
+            # Energy terms are global contributions; add once
+            self._custom_energy_terms[name] = energy
+
+    # Note: legacy add_Bmf has been removed. Use add_custom_interaction instead.
 
     def B_ani(self, n, M):
         """Calculates the anisotropy field for the n-th moment."""
@@ -164,8 +197,10 @@ class Model:
         B += self.B_ex(n, M)
         B += self.B_DMI(n,M)
         B += self.B[n, :]
-        if self.Bmf[n] is not None:
-            B += self.Bmf[n](t, M)
+        # Sum all custom Beff terms
+        if self._custom_beff_terms[n]:
+            for term in self._custom_beff_terms[n].values():
+                B += term(t, M)
 
         return B
 
@@ -210,7 +245,7 @@ class Model:
 
         return f.flatten()
 
-    def solve_LLG(self, tf, M0, t0=0.0, relprec=1e-3, absprec=1e-6, ncp=100):
+    def solve_LLG(self, tf, M0, t0=0.0, ncp=100, solver_kwargs=None):
         """
         Solves the LLG equations using an implicit DAE solver.
 
@@ -218,9 +253,10 @@ class Model:
             tf (float): End time for the simulation (in seconds).
             M0 (np.ndarray): Initial magnetic configuration, shape (n_mag, 3).
             t0 (float, optional): Start time. Defaults to 0.0.
-            relprec (float, optional): Relative tolerance for the solver.
-            absprec (float, optional): Absolute tolerance for the solver.
             ncp (int, optional): Number of communication points (output steps).
+            solver_kwargs (dict, optional): Dictionary of options directly applied
+                as attributes on the underlying solver instance (e.g. 'rtol', 'atol',
+                'maxsteps', etc.). No validation is performed.
 
         Returns:
             A solution object with attributes:
@@ -238,7 +274,11 @@ class Model:
 
         prob = apr.Implicit_Problem(res, M0.flatten(), dM0.flatten(), t0)
         sim = aso.IDA(prob)
-        sim.rtol, sim.atol = relprec, absprec
+
+        # Directly apply provided kwargs to solver instance
+        if isinstance(solver_kwargs, dict):
+            for key, value in solver_kwargs.items():
+                setattr(sim, key, value)
 
         t, y_flat, dy_flat = sim.simulate(tf, ncp=ncp)
 
@@ -257,14 +297,24 @@ class Model:
             M (np.ndarray): The magnetic configuration, shape (n_mag, 3).
 
         Returns:
-            np.ndarray: A 1D array containing [E_total, E_exchange, E_dmi, E_anisotropy, E_b_field].
+            dict: A dictionary of energy contributions with keys:
+                'total', 'exchange', 'dmi', 'anisotropy', 'b_field', plus one key per custom term name.
         """
-        E_exchange = self._energy_exchange(M)
-        E_dmi = self._energy_dmi(M)
-        E_anisotropy = self._energy_anisotropy(M)
-        E_b_field = self._energy_b_field(t, M)
-        E_total = E_exchange + E_dmi + E_anisotropy + E_b_field
-        return np.array([E_total, E_exchange, E_dmi, E_anisotropy, E_b_field])
+        E_exchange = float(self._energy_exchange(M))
+        E_dmi = float(self._energy_dmi(M))
+        E_anisotropy = float(self._energy_anisotropy(M))
+        E_b_field = float(self._energy_b_field(t, M))
+        contributions = {
+            'exchange': E_exchange,
+            'dmi': E_dmi,
+            'anisotropy': E_anisotropy,
+            'b_field': E_b_field,
+        }
+        for name, g in self._custom_energy_terms.items():
+            contributions[name] = float(g(t, M))
+        E_total = sum(contributions.values())
+        contributions['total'] = E_total
+        return contributions
 
     def _energy_exchange(self, M):
         E = 0.0
@@ -303,7 +353,7 @@ class Model:
 
     def _energy_b_field(self, t, M):
         # Sums the dot product of each moment with its corresponding field
-        E = -np.sum(M * self.B) * self.Bt(t) * self.mu_B
+        E = -np.sum(M * self.B) * self.mu_B
         return E
 
 if __name__ == "__main__":
