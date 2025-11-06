@@ -153,28 +153,29 @@ The system Hamiltonian is
 $$
 H = H_{\text{ex}} + H_{\text{DMI}} + H_{\text{ani}} + H_B
 $$
+
 where
 
 - **Exchange:**
-  ```math
-  H_{\text{ex}} = \sum_{ab} \frac{J_{ij}^{ab}}{2} \hat{M}_i^a \hat{M}_j^b
-  ```
+  
+  $$H_{\text{ex}} = \sum_{ab} \frac{J_{ij}^{ab}}{2} \hat{M}_i^a \hat{M}_j^b$$
+  
 - **DMI:**
-  ```math
-  H_{\text{DMI}} = \sum_{ab} \frac{D_{ij}^{ab}}{2} \hat{M}_i^a \hat{M}_j^b
-  ```
+  
+  $$H_{\text{DMI}} = \sum_{ab} \frac{D_{ij}^{ab}}{2} \hat{M}_i^a \hat{M}_j^b$$
+  
   with $D_{jk} = d_i \epsilon_{ijk}$ ($\epsilon_{ijk}$ is the Levi-Civita symbol).
 - **Anisotropy:**
-  ```math
-  H_{\text{ani}} = \sum_{a} -\frac{K_2^a}{2}(\hat{M}^a \cdot \hat{A}_2^a)^2-
+  
+  $$H_{\text{ani}} = \sum_{a} -\frac{K_2^a}{2}(\hat{M}^a \cdot \hat{A}_2^a)^2-
   \frac{K_4^a}{2}(\sum_i \hat{M}_i^4)\\
-  -\frac{K_6^a}{2}\left((\hat{M}^a_x )^6 - (\hat{M}^a_y )^6 - 15(\hat{M}^a_x )^4(\hat{M}^a_y )^2 + 15(\hat{M}^a_x )^2(\hat{M}^a_y )^4\right)
-  ```
+  -\frac{K_6^a}{2}\left((\hat{M}^a_x )^6 - (\hat{M}^a_y )^6 - 15(\hat{M}^a_x )^4(\hat{M}^a_y )^2 + 15(\hat{M}^a_x )^2(\hat{M}^a_y )^4\right)$$
+  
   Note that the 6-fold anisotropy corresponds to an anisotropy in the xy plane with the form $\cos(\theta)$, where $\theta$ is the in-plane angle measured from the x-axis.
 - **Zeeman (field):**
-  ```math
-  H_B = \sum_{a} \hat{M}^a \cdot B^a
-  ```
+  
+  $$H_B = \sum_{a} \hat{M}^a \cdot B^a$$
+  
 
 The sums run over all sites $a, b$ (with $a \neq b$), and $\hat{M}^a = M^a/|M^a|$. $J$ is symmetric while $D$ is antisymmetric,
 see code for conventions.
@@ -186,11 +187,13 @@ The Landau-Lifshitz-Gilbert equations are:
 $$
 \frac{d M^a}{dt} = \gamma M^a \times B_{\text{eff}}^a - \frac{\alpha}{|M^a|} M^a \times \frac{d M^a}{dt}
 $$
+
 where
 
 $$
 B_{\text{eff}}^a = -\frac{1}{|M^a|}\frac{\partial H}{\partial \hat{M}^a}
 $$
+
 - $\alpha$ is the Gilbert damping (set as `m.ag`)
 - $\gamma$ is the gyromagnetic ratio
 
