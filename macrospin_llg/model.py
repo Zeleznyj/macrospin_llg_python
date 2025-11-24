@@ -1,10 +1,15 @@
 import numpy as np
-import assimulo.problem as apr
-import assimulo.solvers as aso
+import scipy.integrate
+import scipy.optimize
+
+from multiprocess import Pool as _MultiprocessPool
 
 from .solution import Solution
+from .minimizers import MinimizerMixin
 
-class Model:
+
+
+class Model(MinimizerMixin):
     """
     Python model for solving the Landau-Lifshitz-Gilbert (LLG) equations.
     This class represents the magnetic moments as a 2D array of shape (n_mag, 3).
@@ -175,7 +180,7 @@ class Model:
             if n != m:
                 Mm = M[m, :]
                 norm_Mm = np.linalg.norm(Mm)
-                B_J -= self.J[:, :, n, m] @ Mm / (norm_Mn * norm_Mm * self.mu_B)
+                B_J -= 2 * self.J[:, :, n, m] @ Mm / (norm_Mn * norm_Mm * self.mu_B)
         return B_J
 
     def B_DMI(self, n, M):
@@ -204,7 +209,12 @@ class Model:
 
         return B
 
+
+
     def find_dM0(self, t0, M0):
+        """
+        Not used anywhere, probably wrong !!!!
+        """
 
         gamma_prime = self.gamma_e * 1e-9
 
@@ -213,8 +223,8 @@ class Model:
             Beff = self.Beff(t0, n, M0)
             Mn = M0[n, :]
             norm_Mn = np.linalg.norm(Mn)
-            dM0n = gamma_prime * np.cross(Mn, Beff) + self.ag * gamma_prime * Beff * norm_Mn
-            dM0n = dM0n / (1 + self.ag**2 * norm_Mn)
+            dM0n = -gamma_prime * np.cross(Mn, Beff) + self.ag * gamma_prime * Beff * norm_Mn
+            dM0n = dM0n / (1 + self.ag**2 )
             dM0[n, :] = dM0n
 
         return dM0
@@ -236,16 +246,84 @@ class Model:
             norm_Mn = np.linalg.norm(Mn)
 
             res = dMn / gamma_prime
-            res += self.ag * np.cross(Mn / norm_Mn, dMn / gamma_prime)
+            res -= self.ag * np.cross(Mn / norm_Mn, dMn / gamma_prime)
 
             Beff = self.Beff(t, n, M)
-            res -= np.cross(Mn, Beff)
+            res += np.cross(Mn, Beff) 
 
             f[n, :] = res
 
         return f.flatten()
 
-    def solve_LLG(self, tf, M0, t0=0.0, ncp=100, solver_kwargs=None):
+    def LLG_explicit(self, t, M_flat):
+
+        M = M_flat.reshape((self.n_mag, 3))
+
+        f = np.zeros_like(M)
+        gamma_prime = self.gamma_e / (1 + self.ag**2)
+
+        for n in range(self.n_mag):
+            Mn = M[n, :]
+            norm_Mn = np.linalg.norm(Mn)
+
+            Beff = self.Beff(t, n, M)
+
+            f[n, :] -= gamma_prime * np.cross(Mn, Beff)
+
+            f[n, :] -= gamma_prime * self.ag / norm_Mn * np.cross(Mn, np.cross(Mn, Beff))
+
+        return f.flatten() * 1e-9
+
+    def solve_LLG(self, tf, M0, t0=0.0, method='DOP853', t_eval=None, **solver_kwargs):
+        """
+        Solves the LLG equations using an explicit solver via scipy.integrate.solve_ivp.
+
+        Args:
+            tf (float): End time for the simulation (in seconds).
+            M0 (np.ndarray): Initial magnetic configuration, shape (n_mag, 3).
+            t0 (float, optional): Start time. Defaults to 0.0.
+            method (str, optional): Integration method to use. Defaults to 'DOP853'.
+            t_eval (np.ndarray, optional): Times at which to store the computed solution.
+            **solver_kwargs: Additional keyword arguments passed to solve_ivp.
+
+        Returns:
+            A solution object with attributes:
+            .t (np.ndarray): 1D array of time points.
+            .y (np.ndarray): 3D array of states, shape (time_points, n_mag, 3).
+        """
+
+
+        M0 = np.asarray(M0)
+        if M0.shape != (self.n_mag, 3):
+            raise ValueError(f"M0 shape must be ({self.n_mag}, 3), but got {M0.shape}")
+
+        # Wrapper for solve_ivp
+        def fun(t, y):
+            return self.LLG_explicit(t, y)
+
+        # If t_eval is not provided, we might want to generate some points or let solve_ivp decide.
+        # However, Solution expects a reasonable number of points.
+        # If t_eval is None, solve_ivp returns points chosen by the solver.
+        
+        res = scipy.integrate.solve_ivp(
+            fun,
+            (t0, tf),
+            M0.flatten(),
+            method=method,
+            t_eval=t_eval,
+            **solver_kwargs
+        )
+
+        if not res.success:
+            print(f"Warning: Solver failed: {res.message}")
+
+        # Reshape output
+        # res.y has shape (n_vars, n_times) -> need (n_times, n_mag, 3)
+        M_reshaped = res.y.T.reshape((len(res.t), self.n_mag, 3))
+
+        return Solution(self, res.t, M_reshaped)
+
+    def solve_LLG_implicit(self, tf, M0, t0=0.0, ncp=100, solver_kwargs=None):
         """
         Solves the LLG equations using an implicit DAE solver.
 
@@ -267,7 +345,17 @@ class Model:
         if M0.shape != (self.n_mag, 3):
             raise ValueError(f"M0 shape must be ({self.n_mag}, 3), but got {M0.shape}")
 
-        dM0 = self.find_dM0(t0, M0)
+        #dM0 = self.find_dM0(t0, M0)
+        dM0 = self.LLG_explicit(t0, M0)
+
+        try:
+            import assimulo.problem as apr
+            import assimulo.solvers as aso
+        except ImportError as exc:
+            raise ImportError(
+                "The 'assimulo' package is required for the implicit solver (solve_LLG_implicit). "
+                "Please install it via 'pip install macrospin_llg[assimulo]' or 'pip install assimulo'."
+            ) from exc
 
         def res(t, y, yd):
             return self.LLG_implicit(t, y, yd)
@@ -355,26 +443,3 @@ class Model:
         # Sums the dot product of each moment with its corresponding field
         E = -np.sum(M * self.B) * self.mu_B
         return E
-
-if __name__ == "__main__":
-    m = Model(3)
-    # Valid single indices
-    print("_ita(0):", list(m._ita(0)))  # [0]
-    print("_ita(2):", list(m._ita(2)))  # [2]
-    # Valid all moments
-    print("_ita(-1):", list(m._ita(-1)))  # [0,1,2]
-    # Valid list/array
-    print("_ita([0,2]):", m._ita([0,2]))  # [0,2]
-    # Invalid cases
-    try:
-        m._ita(3)
-    except ValueError as e:
-        print("Expected error:", e)
-    try:
-        m._ita([-1, 2])  # mixed: -1 not allowed in list
-    except ValueError as e:
-        print("Expected error:", e)
-    try:
-        m._ita([])
-    except ValueError as e:
-        print("Expected error:", e)

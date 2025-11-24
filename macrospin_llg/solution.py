@@ -111,6 +111,8 @@ class Solution:
     def calculate_energy(self):
         """Calculates the energy evolution for each time step."""
         if self.E is None:
+            if self.model is None:
+                raise ValueError("Energy cannot be calculated, model is not defined.")
             num_steps = len(self.t)
             energies = []
             for i in range(num_steps):
@@ -270,3 +272,57 @@ class Solution:
         )
 
         fig.show()
+
+    def save(self, filename):
+        """
+        Saves the solution (t, M) and energy (E) to a .npz file.
+        The Model object is NOT saved.
+        """
+        data_dict = {
+            't': self.t,
+            'M': self.M
+        }
+
+        if self.E is not None and len(self.E) > 0:
+            # Pivot list of dicts to dict of lists/arrays
+            # Assuming all dicts have the same keys, which they should
+            keys = self.E[0].keys()
+            for k in keys:
+                # Create an array for each energy component
+                # Prefix with 'energy_' to avoid collisions
+                values = [step[k] for step in self.E]
+                data_dict[f'energy_{k}'] = np.array(values)
+
+        np.savez(filename, **data_dict)
+
+    @classmethod
+    def load(cls, filename):
+        """
+        Loads a solution from a .npz file.
+        The 'model' attribute will be None.
+        """
+        data = np.load(filename)
+        
+        t = data['t']
+        M = data['M']
+        
+        sol = cls(None, t, M)
+        
+        # Reconstruct E if present
+        # Find all keys starting with 'energy_'
+        energy_keys = [k for k in data.files if k.startswith('energy_')]
+        
+        if energy_keys:
+            num_steps = len(t)
+            # Initialize list of empty dicts
+            E = [{} for _ in range(num_steps)]
+            
+            for k in energy_keys:
+                original_key = k[len('energy_'):] # remove prefix
+                values = data[k]
+                for i in range(num_steps):
+                    E[i][original_key] = float(values[i])
+            
+            sol.E = E
+            
+        return sol
