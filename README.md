@@ -6,7 +6,7 @@ A Python package for solving the macrospin Landau-Lifshitz-Gilbert (LLG) equatio
 
 - Arbitrary number of macrospins.
 - Supports exchange, multiple anisotropies, DMI, Zeeman field, and time-dependent fields.
-- Robust, implicit LLG solver (Assimulo/IDA backend).
+- Robust, explicit LLG solver (scipy backend) with optional implicit solver (Assimulo/IDA backend).
 - Interactive visualization using Plotly.
 
 ---
@@ -15,7 +15,7 @@ A Python package for solving the macrospin Landau-Lifshitz-Gilbert (LLG) equatio
 
 1. Clone this repository:
    ```bash
-   git clone <repo-url>
+   git clone https://github.com/Zeleznyj/macrospin_llg_python
    ```
 2. Install dependencies (see `pyproject.toml`).
    ```bash
@@ -71,30 +71,48 @@ M0 = np.array([
 
 solution = m.solve_LLG(tf=1.0, M0=M0)
 ```
-Additional solver parameters: `t0`, `ncp`.
+Additional solver parameters: `t0`, `method`, `t_eval`, and any keyword arguments accepted by `scipy.integrate.solve_ivp`.
 
-You can also configure all solver options using a single dictionary via the `solver_kwargs` argument. All keys are applied directly to the underlying solver instance:
+You can configure solver options by passing them as keyword arguments:
 
 ```python
-solver_opts = {
-    'rtol': 1e-4,
-    'atol': 1e-7,
-    # Any additional attributes on the underlying solver can be set here, e.g.:
-    # 'maxsteps': 100000,
-    # 'h0': 1e-12,
-}
-
-solution = m.solve_LLG(tf=1.0, M0=M0, ncp=200, solver_kwargs=solver_opts)
+# Example with custom solver settings
+solution = m.solve_LLG(
+    tf=1.0, 
+    M0=M0, 
+    method='DOP853',  # Default method (Runge-Kutta 8(5,3))
+    rtol=1e-6,        # Relative tolerance
+    atol=1e-9,        # Absolute tolerance
+    t_eval=np.linspace(0, 1.0, 200)  # Specific time points for output
+)
 ```
 
 ### Solver backend
 
-This package wraps the implicit DAE solver IDA via the Assimulo interface:
+The default solver uses **scipy's explicit ODE solver** via `scipy.integrate.solve_ivp`:
 
+- <a href="https://docs.scipy.org/doc/scipy/reference/generated/scipy.integrate.solve_ivp.html" target="_blank" rel="noopener">scipy.integrate.solve_ivp documentation</a>
+
+The LLG equations are transformed to explicit form and solved using Runge-Kutta methods (default: `DOP853`). Any parameter supported by `solve_ivp` can be passed as a keyword argument to `solve_LLG` (e.g., `method`, `rtol`, `atol`, `max_step`, `dense_output`).
+
+#### Alternative: Implicit solver
+
+For stiff problems or specific use cases, an **implicit DAE solver** is available via `solve_LLG_implicit`:
+
+```python
+solution = m.solve_LLG_implicit(
+    tf=1.0, 
+    M0=M0, 
+    ncp=200,  # Number of communication points
+    solver_kwargs={'rtol': 1e-6, 'atol': 1e-9}
+)
+```
+
+This uses the IDA solver via the Assimulo interface:
 - <a href="https://jmodelica.org/assimulo/DAE_IDA.html" target="_blank" rel="noopener">Assimulo documentation</a>
 - <a href="https://sundials.readthedocs.io/en/latest/ida/index.html" target="_blank" rel="noopener">SUNDIALS IDA documentation</a>
 
-Under the hood `Model.solve_LLG` constructs an `assimulo.problem.Implicit_Problem` and solves it with `assimulo.solvers.IDA`. Any attribute supported by the underlying solver can be passed through `solver_kwargs` (e.g., `rtol`, `atol`, `maxsteps`, `h0`). See the linked docs for the full list of available options and their meaning.
+Note: The implicit solver requires the optional `assimulo` package. Install it with `pip install macrospin_llg[assimulo]`.
 
 ---
 
@@ -182,10 +200,16 @@ see code for conventions.
 
 ### LLG Equations
 
-The Landau-Lifshitz-Gilbert equations are:
+The Landau-Lifshitz-Gilbert equations in implicit form are:
 
 $$
-\frac{d M^a}{dt} = \gamma M^a \times B_{\text{eff}}^a - \frac{\alpha}{|M^a|} M^a \times \frac{d M^a}{dt}
+\frac{d M^a}{dt} = -\gamma M^a \times B_{\text{eff}}^a + \frac{\alpha}{|M^a|} M^a \times \frac{d M^a}{dt}
+$$
+
+For the default explicit solver, these are transformed to explicit form:
+
+$$
+\frac{d M^a}{dt} = -\frac{\gamma}{1 + \alpha^2} M^a \times B_{\text{eff}}^a - \frac{\gamma \alpha}{(1 + \alpha^2)|M^a|} M^a \times (M^a \times B_{\text{eff}}^a)
 $$
 
 where
@@ -195,7 +219,7 @@ B_{\text{eff}}^a = -\frac{1}{|M^a|}\frac{\partial H}{\partial \hat{M}^a}
 $$
 
 - $\alpha$ is the Gilbert damping (set as `m.ag`)
-- $\gamma$ is the gyromagnetic ratio
+- $\gamma > 0$ is the gyromagnetic ratio
 
 All terms admitted by the Hamiltonian and equation above are supported by corresponding `Model` class functions.
 
