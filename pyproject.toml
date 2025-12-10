@@ -24,6 +24,7 @@ dependencies = [
     "scipy",
     "plotly",
     "tqdm",
+    "multiprocess",
 ]
 
 [project.optional-dependencies]
