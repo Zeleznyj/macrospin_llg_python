@@ -198,6 +198,9 @@ where
 The sums run over all sites $a, b$ (with $a \neq b$), and $\hat{M}^a = M^a/|M^a|$. $J$ is symmetric while $D$ is antisymmetric,
 see code for conventions.
 
+Note that for the exchange each pair a,b is counted twice because both a,b and b,a are include! This is the same convention as that used by
+[tb2j](https://tb2j.readthedocs.io).
+
 ### LLG Equations
 
 The Landau-Lifshitz-Gilbert equations in implicit form are:

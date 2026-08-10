@@ -35,7 +35,6 @@ class Model(MinimizerMixin):
         self.A2 = np.zeros((3, self.n_mag))
         self.K4 = np.zeros(self.n_mag)
         self.K6 = np.zeros(self.n_mag)
-        self.A6 = np.zeros((3, self.n_mag))
         self.D = np.zeros((3, 3, self.n_mag, self.n_mag))
         self.ag = 0.0  # Gilbert damping parameter
 
@@ -82,7 +81,7 @@ class Model(MinimizerMixin):
             for j in it2:
                 if i != j:
                     self.J[:, :, i, j] = Jm
-                    self.J[:, :, j, i] = Jm  # Ensure symmetry
+                    self.J[:, :, j, i] = Jm.T  # Ensure symmetry
 
     def add_ani2(self, a, K, A):
         """Adds uniaxial anisotropy (K*(M.A)^2). Zero-based indexing, -1 for all moments."""
@@ -185,15 +184,13 @@ class Model(MinimizerMixin):
 
     def B_DMI(self, n, M):
         """Calculates the DMI field for the n-th moment."""
-        B_D = np.zeros(3)
-        Mn = M[n, :]
-        norm_Mn = np.linalg.norm(Mn)
-        for m in range(self.n_mag):
-            if n != m:
-                Mm = M[m, :]
-                norm_Mm = np.linalg.norm(Mm)
-                B_D -= self.D[:, :, n, m] @ Mm / (norm_Mn * norm_Mm * self.mu_B)
-        return B_D
+        B = np.zeros(3)
+        for m_ in range(self.n_mag):
+            if n != m_:
+                B -= 2 * self.D[:, :, n, m_] @ M[m_] / (
+                    np.linalg.norm(M[n]) * np.linalg.norm(M[m_]) * self.mu_B)
+        return B
+
 
     def Beff(self, t, n, M):
 
