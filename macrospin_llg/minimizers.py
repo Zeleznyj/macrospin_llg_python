@@ -80,7 +80,7 @@ class MinimizerMixin:
       - n_mag (int)
       - mu_B (float)
       - energy(t, M) -> dict
-      - Beff(t, n, M) -> np.ndarray
+      - effective_field(t, M) -> np.ndarray, shape (n_mag, 3)
       - solve_LLG(...) [if parallel_minimize_energy mode='llg' is used]
     """
 
@@ -88,6 +88,7 @@ class MinimizerMixin:
         M = _angles_to_M(ang, target_norms, self.n_mag)
         grad = np.zeros(2*self.n_mag)
         mu_B = self.mu_B
+        B_all = self.effective_field(t, M)
         for n in range(self.n_mag):
             theta = ang[2*n]
             phi = ang[2*n + 1]
@@ -101,7 +102,7 @@ class MinimizerMixin:
                 np.sin(theta) * np.cos(phi),
                 0
             ])
-            Beff_n = self.Beff(t, n, M)
+            Beff_n = B_all[n, :]
             grad[2*n] = -mu_B * target_norms[n] * np.dot(Beff_n, angles_der)
             grad[2*n + 1] = -mu_B * target_norms[n] * np.dot(Beff_n, angles_der2)
 

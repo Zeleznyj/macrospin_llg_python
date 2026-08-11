@@ -13,21 +13,39 @@ class Model(MinimizerMixin):
     """
     Python model for solving the Landau-Lifshitz-Gilbert (LLG) equations.
     This class represents the magnetic moments as a 2D array of shape (n_mag, 3).
+
+    The effective field used throughout the solver (solve_ivp RHS, the assimulo IDA
+    residual, and MinimizerMixin) is selected via `field_mode`:
+      - "analytic" (default): the hand-coded field expressions (B_ex, B_DMI, B_ani, ...).
+      - "numerical": central finite differences of `energy()`, see `effective_field_numerical`.
+        This mode is intended for validation of analytic field expressions and for
+        prototyping new energy terms before hand-deriving their field. It is roughly
+        6*n_mag times more expensive per evaluation than "analytic", since it costs
+        2*3*n_mag energy evaluations per call. Central differences in double precision
+        are accurate to about 1e-9 to 1e-10 relative error at the optimal step, which is
+        fine for validation and short trajectories, but the error is not smooth in M, so
+        an adaptive integrator such as DOP853 may cut its step size trying to resolve
+        differentiation noise. If that happens in practice, loosen rtol/atol rather than
+        shrinking the finite-difference step h.
     """
     # Physical Constants
     mu_B = 5.7883818012e-5  # Bohr Magneton (eV/T)
     gamma_e = 1.760859644e11  # Gyromagnetic ratio (rad/s*T)
 
-    def __init__(self, n_mag):
+    def __init__(self, n_mag, field_mode="analytic"):
         """
         Initializes the model for a given number of magnetic moments.
 
         Args:
             n_mag (int): The number of magnetic moments in the system.
+            field_mode (str, optional): "analytic" or "numerical". See the class
+                docstring. Defaults to "analytic". Mutable afterwards via the
+                `field_mode` attribute.
         """
         if n_mag <= 0:
             raise ValueError("n_mag must be a positive integer")
         self.n_mag = int(n_mag)
+        self.field_mode = field_mode
 
         # Hamiltonian and model parameters
         self.J = np.zeros((3, 3, self.n_mag, self.n_mag))
@@ -45,6 +63,17 @@ class Model(MinimizerMixin):
         self._custom_beff_terms = [dict() for _ in range(self.n_mag)]
         # Global dict of custom energy callables by name: name -> g(t, M) -> float
         self._custom_energy_terms = {}
+
+    @property
+    def field_mode(self):
+        """Which effective-field implementation `effective_field` dispatches to: "analytic" or "numerical"."""
+        return self._field_mode
+
+    @field_mode.setter
+    def field_mode(self, value):
+        if value not in ("analytic", "numerical"):
+            raise ValueError(f"field_mode must be 'analytic' or 'numerical', got {value!r}.")
+        self._field_mode = value
 
     def _ita(self, a):
         """
@@ -179,6 +208,7 @@ class Model(MinimizerMixin):
             if n != m:
                 Mm = M[m, :]
                 norm_Mm = np.linalg.norm(Mm)
+                #the factor 2 is here because in E each pair is counted twice!
                 B_J -= 2 * self.J[:, :, n, m] @ Mm / (norm_Mn * norm_Mm * self.mu_B)
         return B_J
 
@@ -206,7 +236,95 @@ class Model(MinimizerMixin):
 
         return B
 
+    def _check_custom_terms_have_energy(self):
+        """
+        Raises if any custom interaction registered a Beff contribution without a
+        matching energy contribution. effective_field_numerical differentiates the
+        total energy, so such a term would be silently missing from the numerical
+        field -- better to fail loudly than to return a field missing a term.
+        """
+        names_with_beff = set()
+        for terms in self._custom_beff_terms:
+            names_with_beff.update(terms.keys())
+        missing = names_with_beff - set(self._custom_energy_terms.keys())
+        if missing:
+            raise ValueError(
+                f"Custom interaction(s) {sorted(missing)} register a beff_per_atom "
+                "contribution but no energy contribution. effective_field_numerical "
+                "differentiates the total energy, so these terms would be silently "
+                "missing from the numerical field. Pass an 'energy' callable to "
+                "add_custom_interaction for these names, or keep field_mode='analytic'."
+            )
 
+    def effective_field_numerical(self, t, M, h=1e-6, constrained=False):
+        """
+        Calculates the effective field for all moments via central finite differences
+        of the total energy, as a drop-in replacement for Beff/effective_field.
+
+        grad[i, a] = (E(M + h_ia e_ia) - E(M - h_ia e_ia)) / (2 h_ia)
+        B = -grad / mu_B
+
+        where h_ia = h * max(1.0, abs(M[i, a])) and the actual perturbation used is
+        used in the denominator too, so the scaling stays exact. M is not renormalized
+        during the perturbation: the energy is differentiated exactly as written (same
+        convention as the analytic field expressions), so the radial component of B is
+        generally nonzero, matching the analytic field for non-unit moments.
+
+        Costs 2*3*n_mag energy evaluations per call; the unperturbed energy is not
+        needed by central differences and is not evaluated. See the class docstring
+        for the accuracy caveat (roughly 1e-9 to 1e-10 relative error, non-smooth in M).
+
+        Args:
+            t (float): The time (for time-dependent fields).
+            M (np.ndarray): The magnetic configuration, shape (n_mag, 3).
+            h (float, optional): Nominal finite-difference step size. Defaults to 1e-6.
+            constrained (bool, optional): If True, differentiate E(M / |M|) instead of
+                E(M), i.e. renormalize each moment to unit length before evaluating the
+                energy. This makes the radial component of B exactly zero by
+                construction, which is useful as a reference, but it is not what the
+                analytic field expressions differentiate, so it is not the default.
+
+        Returns:
+            np.ndarray: The effective field, shape (n_mag, 3), in tesla.
+        """
+        self._check_custom_terms_have_energy()
+        M = np.asarray(M, dtype=float)
+
+        def total_energy(M_eval):
+            if constrained:
+                norms = np.linalg.norm(M_eval, axis=1, keepdims=True)
+                M_eval = M_eval / norms
+            return self.energy(t, M_eval)['total']
+
+        grad = np.zeros_like(M)
+        for i in range(self.n_mag):
+            for a in range(3):
+                h_ia = h * max(1.0, abs(M[i, a]))
+                M_plus = M.copy()
+                M_minus = M.copy()
+                M_plus[i, a] += h_ia
+                M_minus[i, a] -= h_ia
+                grad[i, a] = (total_energy(M_plus) - total_energy(M_minus)) / (2 * h_ia)
+
+        return -grad / self.mu_B
+
+    def effective_field(self, t, M):
+        """
+        Computes the effective field for all moments, dispatching on `field_mode`.
+        This is the single internal entry point used by the solve_ivp RHS, the
+        assimulo IDA residual, and MinimizerMixin, so that call sites do not each
+        branch on field_mode themselves.
+
+        Args:
+            t (float): The time (for time-dependent fields).
+            M (np.ndarray): The magnetic configuration, shape (n_mag, 3).
+
+        Returns:
+            np.ndarray: The effective field, shape (n_mag, 3), in tesla.
+        """
+        if self.field_mode == "numerical":
+            return self.effective_field_numerical(t, M)
+        return np.array([self.Beff(t, n, M) for n in range(self.n_mag)])
 
     def find_dM0(self, t0, M0):
         """
@@ -237,6 +355,7 @@ class Model(MinimizerMixin):
         f = np.zeros_like(M)
         gamma_prime = self.gamma_e * 1e-9  # Use GHz/T for better scaling
 
+        B_all = self.effective_field(t, M)
         for n in range(self.n_mag):
             Mn = M[n, :]
             dMn = dM[n, :]
@@ -245,8 +364,8 @@ class Model(MinimizerMixin):
             res = dMn / gamma_prime
             res -= self.ag * np.cross(Mn / norm_Mn, dMn / gamma_prime)
 
-            Beff = self.Beff(t, n, M)
-            res += np.cross(Mn, Beff) 
+            Beff = B_all[n, :]
+            res += np.cross(Mn, Beff)
 
             f[n, :] = res
 
@@ -259,11 +378,12 @@ class Model(MinimizerMixin):
         f = np.zeros_like(M)
         gamma_prime = self.gamma_e / (1 + self.ag**2)
 
+        B_all = self.effective_field(t, M)
         for n in range(self.n_mag):
             Mn = M[n, :]
             norm_Mn = np.linalg.norm(Mn)
 
-            Beff = self.Beff(t, n, M)
+            Beff = B_all[n, :]
 
             f[n, :] -= gamma_prime * np.cross(Mn, Beff)
 
