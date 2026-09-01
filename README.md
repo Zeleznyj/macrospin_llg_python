@@ -192,7 +192,7 @@ where
   Note that the 6-fold anisotropy corresponds to an anisotropy in the xy plane with the form $\cos(\theta)$, where $\theta$ is the in-plane angle measured from the x-axis.
 - **Zeeman (field):**
   
-  $$H_B = \sum_{a} \hat{M}^a \cdot B^a$$
+  $$H_B = -\mu\sum_{a} M^a \cdot B^a$$
   
 
 The sums run over all sites $a, b$ (with $a \neq b$), and $\hat{M}^a = M^a/|M^a|$. $J$ is symmetric while $D$ is antisymmetric,
