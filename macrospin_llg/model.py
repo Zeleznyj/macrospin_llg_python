@@ -6,10 +6,11 @@ from multiprocess import Pool as _MultiprocessPool
 
 from .solution import Solution
 from .minimizers import MinimizerMixin
+from .magnon_modes_numeric import MagnonModesMixin
 
 
 
-class Model(MinimizerMixin):
+class Model(MinimizerMixin, MagnonModesMixin):
     """
     Python model for solving the Landau-Lifshitz-Gilbert (LLG) equations.
     This class represents the magnetic moments as a 2D array of shape (n_mag, 3).
@@ -27,6 +28,11 @@ class Model(MinimizerMixin):
         an adaptive integrator such as DOP853 may cut its step size trying to resolve
         differentiation noise. If that happens in practice, loosen rtol/atol rather than
         shrinking the finite-difference step h.
+
+    Energy minimization (MinimizerMixin) and q = 0 magnon-mode calculation
+    (MagnonModesMixin, `calculate_modes`) are provided via mixins from
+    minimizers.py and magnon_modes_numeric.py respectively; see those
+    modules' docstrings for details.
     """
     # Physical Constants
     mu_B = 5.7883818012e-5  # Bohr Magneton (eV/T)

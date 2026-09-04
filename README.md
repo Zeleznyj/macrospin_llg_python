@@ -138,6 +138,40 @@ solution.plot_animated_3d()
 
 ---
 
+## Magnon Modes
+
+`m.calculate_modes(M, ...)` computes the uniform ($q = 0$) precession (magnon) modes of the system by linearizing the LLG equations around an equilibrium configuration `M`. It works by numerically differentiating the model's own `energy`/`Beff`, using an orthonormal tangent frame at each site rather than spherical angles, so — unlike a $(\theta, \phi)$ formulation — it is regular everywhere on the sphere, including configurations where a moment points along the global $z$ axis.
+
+```python
+# M must be an (approximate) equilibrium, e.g. from m.minimize_energy_angles(...),
+# m.minimize_energy(...), or a long-time relaxed m.solve_LLG(...) trajectory.
+res = m.calculate_modes(M, alpha=0.0)
+
+res["omega_THz"]  # (n_mag,) mode frequencies, ascending, THz
+res["evec_m"]     # (n_mag, n_mag, 3) complex Cartesian eigenvectors;
+                   # physical motion is Re[evec_m[k] * exp(-i*omega[k]*t)]
+```
+
+Key arguments:
+
+- `t` (default `0.0`) is passed through to `energy`/`Beff` unchanged. **The caller is responsible for supplying a `t` at which the energy is static** — this linearizes a fixed energy landscape, it does not handle a time-dependent drive.
+- `alpha` — Gilbert damping used in the mode equations. This is independent of `m.ag`: it multiplies the field conjugate to the energy, not the model's own LLG dynamics, so set it explicitly (`alpha=0.0` for the undamped spectrum).
+- `gamma` — gyromagnetic ratio; defaults to `Model.gamma_e` if not given.
+- `method` — `"grad"` (default), `"energy"`, `"grad-scipy"`, or `"energy-scipy"`: how the Hessian of the energy is obtained. `"grad"` is the most accurate for a given step `h`.
+- `h` — finite-difference step (default `1e-4`). If your model's energy has its own internal tolerance (e.g. Ewald sums), run an h-scan to find the optimal step (see the acceptance tests in `magnon_modes_numeric.py`).
+- `g_tol`, `strict` — control the check that `M` is actually a stationary point on entry.
+- `soft_tol` — relative tolerance for the `stable` flag and for counting near-zero (Goldstone) modes.
+
+In addition to `omega_rad_s`, `omega_THz`, `gamma_rad_s`, and `evec_m`, the returned dict includes:
+
+- `growth_rate` — a nonzero value here at `alpha = 0` signals a saddle-point instability rather than damping; it would otherwise silently print as `omega = 0`.
+- `n_soft`, `stable` — diagnostics for zero (Goldstone) modes and saddle points. See the `calculate_modes()` docstring in `macrospin_llg/magnon_modes_numeric.py` for the expected `n_soft` in standard two-macrospin, zero-field cases.
+- `H`, `W`, `eigvals`, `h_eigvals`, `frames`, `backend`, `mu_eV` — intermediate quantities, useful for diagnostics.
+
+See `macrospin_llg/magnon_modes_numeric.py` for the full parameter/return-value reference and further pitfalls (Goldstone modes, complex eigenvectors, saddle points).
+
+---
+
 ## Model Data Structures
 
 You can access model parameters directly, for advanced use:
